@@ -274,9 +274,11 @@ class OverlayService : Service() {
         val w = dm.widthPixels.toFloat()
         val h = dm.heightPixels.toFloat()
         val saved = prefs.getInt("bs", 0)
+        val offX = prefs.getInt("offx", 0).toFloat()
+        val offY = prefs.getInt("offy", 0).toFloat()
         val s = if (saved > 0) saved.toFloat() else w
-        val x = if (saved > 0) prefs.getInt("bx", 0).toFloat() else 0f
-        val y = if (saved > 0) prefs.getInt("by", 0).toFloat() else (h - w) / 2f
+        val x = if (saved > 0) prefs.getInt("bx", 0) - offX else 0f
+        val y = if (saved > 0) prefs.getInt("by", 0) - offY else (h - w) / 2f
 
         val v = BoardSelectorView(this, x, y, s)
         wm.addView(
@@ -309,10 +311,14 @@ class OverlayService : Service() {
         val done = Button(this)
         done.text = "تم ✅ حفظ"
         done.setOnClickListener {
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
             prefs.edit()
-                .putInt("bx", v.bx.toInt())
-                .putInt("by", v.by.toInt())
+                .putInt("bx", v.bx.toInt() + loc[0])
+                .putInt("by", v.by.toInt() + loc[1])
                 .putInt("bs", v.bs.toInt())
+                .putInt("offx", loc[0])
+                .putInt("offy", loc[1])
                 .apply()
             endBoardSelect()
             Toast.makeText(this, "انحفظ مكان الرقعة", Toast.LENGTH_SHORT).show()
