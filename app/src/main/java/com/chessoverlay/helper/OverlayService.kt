@@ -22,6 +22,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import kotlin.math.abs
 
 class OverlayService : Service() {
@@ -33,6 +34,9 @@ class OverlayService : Service() {
     private var bubble: TextView? = null
     private var panel: LinearLayout? = null
     private val testViews = mutableListOf<View>()
+
+    private var selector: BoardSelectorView? = null
+    private var selectorBar: LinearLayout? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -46,6 +50,7 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         clearTest()
+        endBoardSelect()
         panel?.let { safeRemove(it) }
         bubble?.let { safeRemove(it) }
         panel = null
@@ -64,9 +69,18 @@ class OverlayService : Service() {
         }
     }
 
-    private fun lp(w: Int, h: Int, touchable: Boolean): WindowManager.LayoutParams {
+    private fun lp(
+        w: Int,
+        h: Int,
+        touchable: Boolean,
+        fullCoords: Boolean = false
+    ): WindowManager.LayoutParams {
         var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
         if (!touchable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        if (fullCoords) {
+            flags = flags or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        }
         val p = WindowManager.LayoutParams(
             w, h,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -161,8 +175,8 @@ class OverlayService : Service() {
         }
         val v = buildPanel()
         val params = lp(dp(300), WindowManager.LayoutParams.WRAP_CONTENT, true)
-        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        params.y = dp(100)
+        params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        params.y = dp(40)
         wm.addView(v, params)
         panel = v
     }
@@ -199,9 +213,14 @@ class OverlayService : Service() {
         }
         l.addView(side)
 
+        val sel = Button(this)
+        sel.text = "تحديد الرقعة"
+        sel.setOnClickListener { startBoardSelect() }
+        l.addView(sel)
+
         val test = Button(this)
-        test.text = "تجربة المربعات"
-        test.setOnClickListener { showTest() }
+        test.text = "تجربة المربعات (e2 ← e4)"
+        test.setOnClickListener { drawMove("e2", "e4") }
         l.addView(test)
 
         val close = Button(this)
@@ -243,13 +262,84 @@ class OverlayService : Service() {
         return box
     }
 
-    // ---------- test squares (red = from, blue = to) ----------
+    // ---------- board selection ----------
+
+    private fun startBoardSelect() {
+        panel?.let { safeRemove(it) }
+        panel = null
+        clearTest()
+        endBoardSelect()
+
+        val dm = resources.displayMetrics
+        val w = dm.widthPixels.toFloat()
+        val h = dm.heightPixels.toFloat()
+        val saved = prefs.getInt("bs", 0)
+        val s = if (saved > 0) saved.toFloat() else w
+        val x = if (saved > 0) prefs.getInt("bx", 0).toFloat() else 0f
+        val y = if (saved > 0) prefs.getInt("by", 0).toFloat() else (h - w) / 2f
+
+        val v = BoardSelectorView(this, x, y, s)
+        wm.addView(
+            v,
+            lp(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                true,
+                true
+            )
+        )
+        selector = v
+
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.VERTICAL
+        bar.layoutDirection = View.LAYOUT_DIRECTION_RTL
+        bar.setPadding(dp(12), dp(8), dp(12), dp(8))
+        val bg = GradientDrawable()
+        bg.setColor(Color.parseColor("#F2202020"))
+        bg.cornerRadius = dp(12).toFloat()
+        bar.background = bg
+
+        val hint = TextView(this)
+        hint.text = "حرّك الإطار، وكبّره بالنقطة الخضراء، لين يغطي الرقعة بالضبط"
+        hint.setTextColor(Color.WHITE)
+        hint.textSize = 13f
+        hint.gravity = Gravity.CENTER
+        bar.addView(hint)
+
+        val done = Button(this)
+        done.text = "تم ✅ حفظ"
+        done.setOnClickListener {
+            prefs.edit()
+                .putInt("bx", v.bx.toInt())
+                .putInt("by", v.by.toInt())
+                .putInt("bs", v.bs.toInt())
+                .apply()
+            endBoardSelect()
+            Toast.makeText(this, "انحفظ مكان الرقعة", Toast.LENGTH_SHORT).show()
+        }
+        bar.addView(done)
+
+        val bp = lp(dp(300), WindowManager.LayoutParams.WRAP_CONTENT, true)
+        bp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        bp.y = dp(40)
+        wm.addView(bar, bp)
+        selectorBar = bar
+    }
+
+    private fun endBoardSelect() {
+        selector?.let { safeRemove(it) }
+        selectorBar?.let { safeRemove(it) }
+        selector = null
+        selectorBar = null
+    }
+
+    // ---------- squares (red = from, blue = to) ----------
 
     private fun square(stroke: Int, fill: Int): View {
         val v = View(this)
         val g = GradientDrawable()
         g.setColor(fill)
-        g.setStroke(dp(4), stroke)
+        g.setStroke(dp(3), stroke)
         v.background = g
         return v
     }
@@ -259,17 +349,38 @@ class OverlayService : Service() {
         testViews.clear()
     }
 
-    private fun showTest() {
+    private fun drawMove(from: String, to: String) {
         clearTest()
+        val bs = prefs.getInt("bs", 0)
+        if (bs <= 0) {
+            Toast.makeText(this, "حدد الرقعة أول", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val bx = prefs.getInt("bx", 0)
+        val by = prefs.getInt("by", 0)
+        val cell = bs / 8
+        val white = prefs.getBoolean("white", true)
+
+        fun pos(sq: String): Pair<Int, Int> {
+            val f = sq[0] - 'a'
+            val r = sq[1] - '1' + 1
+            val col = if (white) f else 7 - f
+            val row = if (white) 8 - r else r - 1
+            return Pair(bx + col * cell, by + row * cell)
+        }
+
         val red = square(Color.RED, Color.parseColor("#55FF0000"))
         val blue = square(Color.BLUE, Color.parseColor("#550000FF"))
 
-        val pr = lp(dp(90), dp(90), false)
-        pr.x = dp(40)
-        pr.y = dp(350)
-        val pb = lp(dp(90), dp(90), false)
-        pb.x = dp(180)
-        pb.y = dp(350)
+        val a = pos(from)
+        val b = pos(to)
+
+        val pr = lp(cell, cell, false, true)
+        pr.x = a.first
+        pr.y = a.second
+        val pb = lp(cell, cell, false, true)
+        pb.x = b.first
+        pb.y = b.second
 
         wm.addView(red, pr)
         wm.addView(blue, pb)
